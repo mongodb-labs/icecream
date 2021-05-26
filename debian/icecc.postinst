@@ -1,0 +1,37 @@
+#!/bin/sh -e
+# postinst script for icecc
+
+set -e
+
+if test "$1" = triggered; then
+    invoke-rc.d iceccd restart
+    exit 0
+fi
+
+# configure some variables
+ICECC_GROUP=icecc
+ICECC_USER=icecc
+ICECC_HOME=/var/cache/icecc
+
+# create group
+getent group $ICECC_GROUP > /dev/null || ( echo Creating $ICECC_GROUP group... ; \
+addgroup --quiet --system $ICECC_GROUP)
+
+# create user
+getent passwd $ICECC_USER > /dev/null || ( echo Creating $ICECC_USER user... ; \
+adduser --quiet --system --ingroup $ICECC_GROUP \
+--home $ICECC_HOME --no-create-home $ICECC_USER )
+
+chown $ICECC_USER:$ICECC_GROUP $ICECC_HOME
+
+if [ -x "/etc/init.d/icecc-scheduler" ]; then
+        update-rc.d icecc-scheduler defaults >/dev/null
+        # disable icecc-scheduler when doing a new installation
+        if test -z "$2"; then
+                update-rc.d icecc-scheduler disable >/dev/null || exit $?
+        fi
+fi
+
+#DEBHELPER#
+
+exit 0

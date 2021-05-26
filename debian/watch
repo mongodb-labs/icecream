@@ -1,0 +1,3 @@
+version=3
+opts="filenamemangle=s/(?:.*?)?v?(\d[\d.]*)\.tar\.gz/icecream-$1.tar.gz/g" \
+ https://github.com/icecc/icecream/releases .*/v?(\d[\d.]*)\.tar\.gz

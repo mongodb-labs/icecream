@@ -1,0 +1,20 @@
+Author: Pino Toscano <pino@debian.org>
+Description: Do not install SUSE stuff on ibm/s390x system
+ It is not needed in Debian.
+ .
+ This reverts the upstream commit 3b26d6a0a611728d6c59e0705798e99943a3370f
+ in this file.
+Last-Update: 2017-09-30
+Forwarded: not-needed
+ 
+--- a/suse/Makefile.am
++++ b/suse/Makefile.am
+@@ -13,7 +13,7 @@ logrotatedir=$(sysconfdir)/logrotate.d
+ susefirewallservicesdir=$(sysconfdir)/sysconfig/SuSEfirewall2.d/services
+ 
+ install: init.icecream logrotate SuSEfirewall.iceccd SuSEfirewall.scheduler sysconfig.icecream
+-	if test $(host_vendor) = "suse" -o $(host_vendor) = "ibm" ; then \
++	if test $(host_vendor) = "suse"; then \
+ 	  mkdir -p $(DESTDIR)/$(initdir) ;\
+ 	  $(INSTALL) -m 755 $(srcdir)/init.icecream $(DESTDIR)$(initdir)/icecream ;\
+ 	  ln -sf $(initdir)/icecream $(DESTDIR)$(sbindir)/rcicecream ;\

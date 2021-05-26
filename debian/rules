@@ -1,0 +1,23 @@
+#!/usr/bin/make -f
+
+DEB_HOST_MULTIARCH ?= $(shell dpkg-architecture -qDEB_HOST_MULTIARCH)
+
+%:
+	dh $@
+
+override_dh_auto_configure:
+	dh_auto_configure -- --libexecdir='$${prefix}/lib' --enable-clang-wrappers
+
+override_dh_auto_install:
+	dh_auto_install
+	# remove libtool file
+	rm -f debian/tmp/usr/lib/$(DEB_HOST_MULTIARCH)/libicecc.la
+
+override_dh_missing:
+	dh_missing --fail-missing
+
+override_dh_installinit:
+	dh_installinit -picecc --name=iceccd
+	dh_installinit -picecc --name=icecc-scheduler --noscripts
+
+.PHONY: override_dh_auto_test

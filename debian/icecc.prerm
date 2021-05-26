@@ -1,0 +1,12 @@
+#!/bin/sh
+# prerm script for icecc
+
+set -e
+
+#DEBHELPER#
+
+if [ -x "/etc/init.d/icecc-scheduler" ]; then
+        invoke-rc.d icecc-scheduler stop || exit $?
+fi
+
+exit 0

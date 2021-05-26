@@ -1,0 +1,4 @@
+# updaterc.d can be called a second time to disable it
+icecc: duplicate-updaterc.d-calls-in-postinst icecc-scheduler
+icecc: manpage-has-errors-from-man usr/share/man/man7/icecream.7.gz
+icecc: binary-without-manpage usr/bin/icecc-test-env
