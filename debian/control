@@ -1,7 +1,7 @@
 Source: icecc
 Section: devel
 Priority: optional
-Maintainer: Debian KDE Extras Team <pkg-kde-extras@lists.alioth.debian.org>
+Maintainer: MongoDB SDP Team <dev-prod-devplatform@10gen.com>
 Uploaders: Mark Purcell <msp@debian.org>,
  Pino Toscano <pino@debian.org>
 Build-Depends: debhelper (>= 11),
@@ -10,7 +10,8 @@ Build-Depends: debhelper (>= 11),
  liblzo2-dev,
  libzstd-dev,
  libcap-ng-dev [linux-any],
- libdevstat-dev [kfreebsd-any]
+ libdevstat-dev [kfreebsd-any],
+ pkg-config
 Homepage: https://github.com/icecc/icecream
 Standards-Version: 4.1.4
 Vcs-Git: https://salsa.debian.org/qt-kde-team/extras/icecc.git
