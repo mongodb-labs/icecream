@@ -29,7 +29,7 @@ Job::Job(const unsigned int _id, CompileServer *subm)
     : m_id(_id)
     , m_localClientId(0)
     , m_state(PENDING)
-    , m_server(0)
+    , m_server(nullptr)
     , m_submitter(subm)
     , m_startTime(0)
     , m_startOnScheduler(0)
@@ -42,6 +42,7 @@ Job::Job(const unsigned int _id, CompileServer *subm)
     , m_preferredHost()
     , m_minimalHostVersion(0)
     , m_requiredFeatures(0)
+    , m_niceness(0)
 {
     m_submitter->submittedJobsIncrement();
 }
@@ -227,4 +228,14 @@ unsigned int Job::requiredFeatures() const
 void Job::setRequiredFeatures(unsigned int features)
 {
     m_requiredFeatures = features;
+}
+
+int Job::niceness() const
+{
+    return m_niceness;
+}
+
+void Job::setNiceness(int nice)
+{
+    m_niceness = nice;
 }

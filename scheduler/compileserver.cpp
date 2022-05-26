@@ -155,6 +155,16 @@ string CompileServer::can_install(const Job *job, bool ignore_installing) const
     return string();
 }
 
+int CompileServer::maxPreloadCount() const
+{
+    // Always allow one job to be preloaded (sent to the compile server
+    // even though there is no compile slot free for it). Since servers
+    // with multiple cores are capable of handling many jobs at once,
+    // allow one extra preload job for each 4 cores, to minimize stalls
+    // when the compile server is waiting for more jobs to be received.
+    return 1 + (m_maxJobs / 4);
+}
+
 bool CompileServer::is_eligible_ever(const Job *job) const
 {
     bool jobs_okay = m_maxJobs > 0;
@@ -185,8 +195,8 @@ bool CompileServer::is_eligible_now(const Job *job) const
     if(!is_eligible_ever(job))
         return false;
     bool jobs_okay = int(m_jobList.size()) < m_maxJobs;
-    if( m_maxJobs > 0 && int(m_jobList.size()) == m_maxJobs )
-        jobs_okay = true; // allow one job for preloading
+    if( m_maxJobs > 0 && int(m_jobList.size()) < m_maxJobs + maxPreloadCount())
+        jobs_okay = true; // allow a job for preloading
     bool load_okay = m_load < 1000;
     bool eligible = jobs_okay
                     && load_okay
@@ -482,7 +492,7 @@ int CompileServer::getInFd() const
 
 void CompileServer::startInConnectionTest()
 {
-    if (m_noRemote || getConnectionInProgress() || (m_nextConnTime > time(0)))
+    if (m_noRemote || getConnectionInProgress() || (m_nextConnTime > time(nullptr)))
     {
         return;
     }
@@ -507,7 +517,7 @@ void CompileServer::startInConnectionTest()
     {
         updateInConnectivity(false);
     }
-    m_lastConnStartTime=time(0);
+    m_lastConnStartTime=time(nullptr);
 }
 
 void CompileServer::updateInConnectivity(bool acceptingIn)
@@ -533,7 +543,7 @@ void CompileServer::updateInConnectivity(bool acceptingIn)
                 ":" << m_remotePort <<
                 ") is accepting incoming connections." << endl;
         }
-        m_nextConnTime = time(0) + check_back_time;
+        m_nextConnTime = time(nullptr) + check_back_time;
         close(m_inFd);
         m_inFd = -1;
     }
@@ -547,12 +557,12 @@ void CompileServer::updateInConnectivity(bool acceptingIn)
                 ":" << m_remotePort <<
                 ") connected but is not able to accept incoming connections." << endl;
         }
-        m_nextConnTime = time(0) + time_offset_table[m_inConnAttempt];
+        m_nextConnTime = time(nullptr) + time_offset_table[m_inConnAttempt];
         if(m_inConnAttempt < (table_size - 1))
             m_inConnAttempt++;
         trace()  << nodeName() << " failed to accept an incoming connection on "
             << name << ":" << m_remotePort << " attempting again in "
-            << m_nextConnTime - time(0) << " seconds" << endl;
+            << m_nextConnTime - time(nullptr) << " seconds" << endl;
         close(m_inFd);
         m_inFd = -1;
     }
@@ -581,7 +591,7 @@ bool CompileServer::isConnected()
 
 time_t CompileServer::getConnectionTimeout()
 {
-    time_t now = time(0);
+    time_t now = time(nullptr);
     time_t elapsed_time = now - m_lastConnStartTime;
     time_t max_timeout = 5;
     return (elapsed_time < max_timeout) ? max_timeout - elapsed_time : 0;
@@ -602,6 +612,6 @@ time_t CompileServer::getNextTimeout()
     {
         return getConnectionTimeout();
     }
-    time_t until_connect = m_nextConnTime - time(0);
+    time_t until_connect = m_nextConnTime - time(nullptr);
     return (until_connect > 0) ? until_connect : 0;
 }

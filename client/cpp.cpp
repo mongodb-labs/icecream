@@ -110,7 +110,7 @@ pid_t call_cpp(CompileJob &job, int fdwrite, int fdread)
         argv = new char*[2 + 1];
         argv[0] = strdup("/bin/cat");
         argv[1] = strdup(job.inputFile().c_str());
-        argv[2] = 0;
+        argv[2] = nullptr;
     } else {
         list<string> flags = job.localFlags();
         appendList(flags, job.restFlags());
@@ -127,7 +127,7 @@ pid_t call_cpp(CompileJob &job, int fdwrite, int fdread)
                     if (access(p.c_str(), R_OK) < 0 && access((p + ".gch").c_str(), R_OK) == 0) {
                         // PCH is useless for preprocessing, ignore the flag.
                         list<string>::iterator o = --it;
-                        it++;
+                        ++it;
                         flags.erase(o);
                         o = it++;
                         flags.erase(o);
@@ -151,6 +151,11 @@ pid_t call_cpp(CompileJob &job, int fdwrite, int fdread)
                 // failure if the -include check above failed to detect usage of a PCH file (e.g. because
                 // it needs to be found in one of the -I paths, which we don't check) and the header file
                 // itself doesn't exist.
+                flags.erase(it++);
+            } else if ((*it) == "-fmodules" || (*it) == "-fcxx-modules" || (*it) == "-fmodules-ts"
+                || (*it).find("-fmodules-cache-path=") == 0) {
+                // Clang modules, handle like with PCH, remove the flags and compile remotely
+                // without them.
                 flags.erase(it++);
             } else {
                 ++it;
@@ -180,11 +185,11 @@ pid_t call_cpp(CompileJob &job, int fdwrite, int fdread)
             }
         }
 
-        argv[i++] = 0;
+        argv[i++] = nullptr;
     }
 
     string argstxt = argv[ 0 ];
-    for( int i = 1; argv[ i ] != NULL; ++i ) {
+    for( int i = 1; argv[ i ] != nullptr; ++i ) {
         argstxt += ' ';
         argstxt += argv[ i ];
     }

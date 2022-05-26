@@ -5,8 +5,11 @@ testdir="$2"
 shift
 shift
 valgrind=
+valgrind_listener_pid=
 builddir=.
 strict=
+sudo=
+killcmd=kill
 
 usage()
 {
@@ -16,9 +19,9 @@ usage()
 
 get_default_valgrind_flags()
 {
-    default_valgrind_args="--num-callers=50 --suppressions=valgrind_suppressions --log-file=$testdir/valgrind-%p.log"
+    default_valgrind_args="--num-callers=50 --suppressions=valgrind_suppressions --log-socket=127.0.0.1"
     # Check if valgrind knows --error-markers, which makes it simpler to find out if log contains any error.
-    valgrind_error_markers="--error-marker2s=ICEERRORBEGIN,ICEERROREND"
+    valgrind_error_markers="--error-markers=ICEERRORBEGIN,ICEERROREND"
     valgrind $valgrind_error_markers true 2>/dev/null
     if test $? -eq 0; then
         default_valgrind_args="$default_valgrind_args $valgrind_error_markers"
@@ -51,6 +54,14 @@ while test -n "$1"; do
             if test "$strict" = "0"; then
                 strict=
             fi
+            ;;
+        --sudo|--sudo=1)
+            sudo="sudo -E --"
+            # sudo will not forward a signal from its own process group, so set a new one for it
+            killcmd="sudo -- setsid -w -- kill"
+            ;;
+        --sudo=)
+            # when invoked from Makefile, no sudo
             ;;
         *)
             usage
@@ -216,7 +227,21 @@ check_compilers()
 abort_tests()
 {
     dump_logs
+    if test -n "$valgrind_listener_pid"; then
+        sleep 1
+        kill "$valgrind_listener_pid"
+    fi
     exit 2
+}
+
+trap_handler()
+{
+    stop_ice 0
+    if test -n "$valgrind_listener_pid"; then
+        sleep 1
+        kill "$valgrind_listener_pid"
+    fi
+    exit 3
 }
 
 start_iceccd()
@@ -225,7 +250,7 @@ start_iceccd()
     shift
     ICECC_TEST_SOCKET="$testdir"/socket-${name} ICECC_SCHEDULER=:8767 ICECC_TESTS=1 ICECC_TEST_SCHEDULER_PORTS=8767:8769 \
         ICECC_TEST_FLUSH_LOG_MARK="$testdir"/flush_log_mark.txt ICECC_TEST_LOG_HEADER="$testdir"/log_header.txt \
-        $valgrind "${iceccd}" -b "$testdir"/envs-${name} -l "$testdir"/${name}.log -n ${netname} -N ${name}  -v -v -v "$@" &
+        $sudo $valgrind "${iceccd}" -b "$testdir"/envs-${name} -l "$testdir"/${name}.log -n ${netname} -N ${name}  -v -v -v -u $(whoami) "$@" &
     pid=$!
     eval ${name}_pid=${pid}
     echo ${pid} > "$testdir"/${name}.pid
@@ -237,7 +262,7 @@ kill_daemon()
 
     pid=${daemon}_pid
     if test -n "${!pid}"; then
-        kill "${!pid}" 2>/dev/null
+        $killcmd "${!pid}" 2>/dev/null
         if test $check_type -eq 1; then
             wait ${!pid}
             exitcode=$?
@@ -281,7 +306,7 @@ start_only_daemon()
 {
     ICECC_TEST_SOCKET="$testdir"/socket-localice ICECC_SCHEDULER=:8767 ICECC_TESTS=1 ICECC_TEST_SCHEDULER_PORTS=8767:8769 \
         ICECC_TEST_FLUSH_LOG_MARK="$testdir"/flush_log_mark.txt ICECC_TEST_LOG_HEADER="$testdir"/log_header.txt \
-        $valgrind "${iceccd}" --no-remote -b "$testdir"/envs-localice -l "$testdir"/localice.log -n ${netname} -N localice -m 2 -v -v -v &
+        $sudo $valgrind "${iceccd}" --no-remote -b "$testdir"/envs-localice -l "$testdir"/localice.log -n ${netname} -N localice -m 2 -u $(whoami) -v -v -v &
     localice_pid=$!
     echo $localice_pid > "$testdir"/localice.pid
     wait_for_ice_startup_complete "noscheduler" localice
@@ -301,7 +326,7 @@ stop_ice()
     fi
     if test $check_type -eq 1; then
         if test -n "$scheduler_pid"; then
-            if ! kill -0 $scheduler_pid; then
+            if ! $killcmd -0 $scheduler_pid; then
                 echo Scheduler no longer running.
                 stop_ice 0
                 abort_tests
@@ -309,7 +334,7 @@ stop_ice()
         fi
         for daemon in localice remoteice1 remoteice2; do
             pid=${daemon}_pid
-            if ! kill -0 ${!pid}; then
+            if ! $killcmd -0 ${!pid}; then
                 echo Daemon $daemon no longer running.
                 stop_ice 0
                 abort_tests
@@ -371,13 +396,13 @@ stop_only_daemon()
 {
     check_first="$1"
     if test $check_first -ne 0; then
-        if ! kill -0 $localice_pid; then
+        if ! $killcmd -0 $localice_pid; then
             echo Daemon localice no longer running.
             stop_only_daemon 0
             abort_tests
         fi
     fi
-    kill $localice_pid 2>/dev/null
+    $killcmd $localice_pid 2>/dev/null
     rm -f "$testdir"/localice.pid
     rm -rf "$testdir"/envs-localice
     rm -f "$testdir"/socket-localice
@@ -414,7 +439,7 @@ wait_for_ice_startup_complete()
                 cat_log_last_mark ${process} | grep -q "scheduler ready" || notready=1
             elif echo "$process" | grep -q -e "localice" -e "remoteice"; then
                 pid=${process}_pid
-                if ! kill -0 ${!pid}; then
+                if ! $killcmd -0 ${!pid}; then
                     echo Daemon $process start failure.
                     stop_ice 0
                     abort_tests
@@ -437,7 +462,7 @@ wait_for_ice_startup_complete()
         # ensure log file flush
         for process in $processes; do
             pid=${process}_pid
-            kill -HUP ${!pid}
+            $killcmd -HUP ${!pid}
         done
     done
     if test -n "$notready"; then
@@ -1622,7 +1647,7 @@ mark_logs()
     for daemon in $daemonlogs; do
         pid=${daemon}_pid
         if test -n "${!pid}"; then
-            kill -0 ${!pid}
+            $killcmd -0 ${!pid}
             if test $? -ne 0; then
                 manual="$manual $daemon"
             fi
@@ -1644,7 +1669,7 @@ flush_logs()
     for daemon in $daemonlogs; do
         pid=${daemon}_pid
         if test -n "${!pid}"; then
-            kill -HUP ${!pid}
+            $killcmd -HUP ${!pid}
             if test $? -eq 0; then
                 wait_for="$wait_for $daemon"
             else
@@ -1683,25 +1708,37 @@ dump_logs()
             cat_log_last_section ${log}
         fi
     done
-    valgrind_logs=$(ls "$testdir"/valgrind-*.log 2>/dev/null)
-    for log in $valgrind_logs; do
-        has_error=
-        if test -n "$valgrind_error_markers"; then
-            if grep -q ICEERRORBEGIN ${log}; then
-                has_error=1
+    # Valgrind-listener merges all logs together, split them per PID.
+    if test -f "$testdir"/valgrind.log; then
+        cat "$testdir"/valgrind.log | sed 's/^([0-9]\+) //' | grep '^==[0-9]\+==' > "$testdir"/valgrind.tmp
+        while true; do
+            valpid=$(head -1 "$testdir"/valgrind.tmp | sed 's/^==\([0-9]*\)==.*$/\1/' 2>/dev/null)
+            if test -z "$valpid"; then
+                break
             fi
-        else
-            # Let's guess that every error message has this.
-            if grep -q '^==[0-9]*==    at ' ${log}; then
-                has_error=1
+            log="$testdir"/valgrind2.tmp
+            grep "^==${valpid}==" "$testdir"/valgrind.tmp > ${log}
+            has_error=
+            if test -n "$valgrind_error_markers"; then
+                if grep -q ICEERRORBEGIN ${log}; then
+                    has_error=1
+                fi
+            else
+                # Let's guess that every error message has this.
+                if grep -q '^==[0-9]*==    at ' ${log}; then
+                    has_error=1
+                fi
             fi
-        fi
-        if  test -n "$has_error"; then
-            echo ------------------------------------------------
-            echo "Log: ${log}" | sed "s#${testdir}/##"
-            grep -v ICEERRORBEGIN ${log} | grep -v ICEERROREND
-        fi
-    done
+            if  test -n "$has_error"; then
+                echo ------------------------------------------------
+                echo "Log: valgrind-$valpid.log"
+                grep -v ICEERRORBEGIN ${log} | grep -v ICEERROREND
+            fi
+            grep -v "^==${valpid}==" "$testdir"/valgrind.tmp > ${log}
+            mv ${log} "$testdir"/valgrind.tmp
+        done
+        rm -f "$testdir"/valgrind.tmp "$testdir"/valgrind2.tmp
+    fi
 }
 
 cat_log_last_mark()
@@ -1773,11 +1810,11 @@ check_logs_for_generic_errors()
     fi
     has_valgrind_error=
     if test -n "$valgrind_error_markers"; then
-        if grep -q "ICEERRORBEGIN" "$testdir"/valgrind-*.log 2>/dev/null; then
+        if grep -q "ICEERRORBEGIN" "$testdir"/valgrind.log 2>/dev/null; then
             has_valgrind_error=1
         fi
     else
-        if grep -q '^==[0-9]*==    at ' "$testdir"/valgrind-*.log 2>/dev/null; then
+        if grep -q '^==[0-9]*==    at ' "$testdir"/valgrind.log 2>/dev/null; then
             has_valgrind_error=1
         fi
     fi
@@ -1911,6 +1948,8 @@ EOF
 # Main code starts here
 # ==================================================================
 
+trap 'trap_handler' SIGINT
+
 echo
 
 check_compilers
@@ -1922,7 +1961,13 @@ for log in $alltestlogs; do
     rm -f "$testdir"/${log}_all.log
     echo -n >"$testdir"/${log}.log
 done
-rm -f "$testdir"/valgrind-*.log 2>/dev/null
+rm -f "$testdir"/valgrind.log 2>/dev/null
+
+if test -n "$valgrind"; then
+    valgrind-listener >"$testdir"/valgrind.log &
+    valgrind_listener_pid=$!
+    sleep 1
+fi
 
 buildnativetest
 
@@ -1941,9 +1986,23 @@ run_ice "$testdir/plain.o" "remote" 0 $TESTCXX -Wall -Werror -c plain.cpp -O2 -o
 run_ice "$testdir/plain.ii" "local" 0 $TESTCXX -Wall -Werror -E plain.cpp -o "$testdir/"plain.ii
 run_ice "$testdir/includes.o" "remote" 0 $TESTCXX -Wall -Werror -c includes.cpp -o "$testdir"/includes.o
 run_ice "$testdir/includes.o" "remote" 0 $TESTCXX -Wall -Werror -c includes-without.cpp -include includes.h -o "$testdir"/includes.o
-run_ice "$testdir/plain.o" "local" 0 $TESTCXX -Wall -Werror -c plain.cpp -mtune=native -o "$testdir"/plain.o
 run_ice "$testdir/plain.o" "remote" 0 $TESTCC -Wall -Werror -x c++ -c plain -o "$testdir"/plain.o
 run_ice "$testdir/plain.s" "remote" 0 $TESTCC -Wall -Werror -S plain.c -o "$testdir"/plain.s
+run_ice "$testdir/plain.o" "remote" 0 $TESTCC -Wall -Werror -Wpedantic -c plain.c -o "$testdir/"plain.o
+
+if test -n "$using_clang"; then
+    target_cpu=$($TESTCXX -### -E - -march=native 2>&1 | grep '"-cc1"' | sed 's/^.* "-target-cpu" "\([^"]*\)".*$/\1/')
+    run_ice "$testdir/plain.o" "remote" 0 $TESTCXX -Wall -Werror -c plain.cpp -march=native -o "$testdir"/plain.o
+    if test -z "$chroot_disabled"; then
+        check_section_log_message remoteice1 "remote compile arguments:.* -Xclang -target-cpu -Xclang $target_cpu "
+    fi
+else
+    target_cpu=$($TESTCXX -### -E - -march=native 2>&1 | grep '/cc1 ' | sed 's/^.* "-march=\([^"]*\)".*$/\1/')
+    run_ice "$testdir/plain.o" "remote" 0 $TESTCXX -Wall -Werror -c plain.cpp -march=native -o "$testdir"/plain.o
+    if test -z "$chroot_disabled"; then
+        check_section_log_message remoteice1 "remote compile arguments:.* -march=$target_cpu "
+    fi
+fi
 
 $TESTCC -Wa,-al=listing.txt -Wall -Werror -c plain.c -o "$testdir/"plain.o 2>/dev/null
 if test $? -eq 0; then
@@ -2023,13 +2082,14 @@ else
 fi
 
 debug_fission_disabled=1
-$TESTCXX -gsplit-dwarf true.cpp -o "$testdir"/true 2>/dev/null >/dev/null
-if test $? -eq 0; then
+rm -f "$testdir"/true.dwo
+$TESTCXX -gsplit-dwarf -g true.cpp -o "$testdir"/true 2>/dev/null >/dev/null
+if test $? -eq 0 -a -f true.dwo; then
     "$testdir"/true
     if test $? -eq 0; then
         debug_fission_disabled=
     fi
-    rm -f "$testdir"/true "$testdir"/true.dwo true.dwo
+    rm -f "$testdir"/true true.dwo
 fi
 
 if test -n "$debug_fission_disabled"; then
@@ -2270,7 +2330,7 @@ buildnativewithsymlinktest
 buildnativewithwrappertest
 
 if test -n "$valgrind"; then
-    rm -f "$testdir"/valgrind-*.log
+    rm -f "$testdir"/valgrind.log
 fi
 
 ignore=
@@ -2309,6 +2369,11 @@ if test -n "$skipped_tests"; then
 else
     echo All tests OK.
     echo =============
+fi
+
+if test -n "$valgrind_listener_pid"; then
+    sleep 1
+    kill "$valgrind_listener_pid"
 fi
 
 exit 0

@@ -36,6 +36,7 @@
 
 #include <comm.h>
 #include "client.h"
+#include "pipes.h"
 
 using namespace std;
 
@@ -199,7 +200,91 @@ bool compiler_only_rewrite_includes(const CompileJob &job)
 
 string clang_get_default_target(const CompileJob &job)
 {
-    return read_command_output( find_compiler( job ) + " -dumpmachine" );
+    return read_command_line( find_compiler( job ), { "-dumpmachine" } );
+}
+
+bool compiler_get_arch_flags(const CompileJob& job, bool march, bool mcpu, bool mtune, list<string>& args)
+{
+    // Get the relevant flags by calling '<compiler> -### -E - <flags>' and then remove
+    // what calling that without the flags gives to get only what the flags introduced.
+    // TODO: This probably should be cached somehow in iceccd.
+    string compiler = find_compiler(job);
+    bool is_clang = compiler_is_clang(job);
+    vector< string > compiler_args = { "-###", "-E", "-" };
+    string normal_output = read_command_output( compiler, compiler_args, STDERR_FILENO );
+    if( march )
+        compiler_args.push_back( "-march=native" );
+    if( mcpu )
+        compiler_args.push_back( "-mcpu=native" );
+    if( mtune )
+        compiler_args.push_back( "-mtune=native" );
+    string flags_output = read_command_output( compiler, compiler_args, STDERR_FILENO );
+    try {
+        // get the right line
+        if(is_clang) {
+            flags_output.erase(0, flags_output.find("\"-cc1\""));
+            if(flags_output.find('\n') != string::npos)
+                flags_output.erase(flags_output.find('\n'));
+            normal_output.erase(0, normal_output.find("\"-cc1\""));
+            if(normal_output.find('\n') != string::npos)
+                normal_output.erase(normal_output.find('\n'));
+        } else {
+            flags_output.erase(0, flags_output.find("/cc1 "));
+            flags_output.erase(flags_output.find('\n'));
+            normal_output.erase(0, normal_output.find("/cc1 "));
+            normal_output.erase(normal_output.find('\n'));
+        }
+    } catch(...) {
+        return false;
+    }
+    // The differing flags are somewhere in the middle, in one block.
+    int start = 0;
+    const int flags_end = flags_output.size();
+    int end = flags_end;
+    while( start < end && flags_output[ start ] == normal_output[ start ] )
+        ++start;
+    if( start == end ) // The flag doesn't actually do anything, e.g. Clang ignores -mtune.
+        return true;
+    int end_diff = normal_output.size() - end;
+    --end;
+    while( end > start && flags_output[ end ] == normal_output[ end + end_diff ] )
+        --end;
+    while( start >= 0 && flags_output[ start ] != ' ' )
+        --start;
+    ++start;
+    // Clang has "-target-cpu" "x86-64", and the "x86-64" is usually where the first
+    // difference is, but the "-target-cpu" is needed too.
+    if( flags_output[ start ] != '-' && flags_output[ start + 1 ] != '-' ) {
+        --start;
+        --start;
+        while( start >= 0 && flags_output[ start ] != ' ' )
+            --start;
+        ++start;
+    }
+    while( end < flags_end && flags_output[ end ] != ' ' )
+        ++end;
+    ++end;
+    // Now start-end is the difference range.
+    while( start < end ) {
+        int pos = start;
+        string arg;
+        if( flags_output[ pos ] == '\"' ) {
+            ++pos;
+            while( pos < end && flags_output[ pos ] != '\"' )
+                ++pos;
+            arg = flags_output.substr( start + 1, pos - start - 1 );
+            start = pos + 2;
+        } else {
+            while( pos < end && flags_output[ pos ] != ' ' )
+                ++pos;
+            arg = flags_output.substr( start, pos - start );
+            start = pos + 1;
+        }
+        if( is_clang )
+            args.push_back( "-Xclang" );
+        args.push_back( arg );
+    }
+    return true;
 }
 
 static volatile int user_break_signal = 0;
@@ -267,7 +352,7 @@ int build_local(CompileJob &job, MsgChannel *local_daemon, struct rusage *used)
         argstxt += *it;
     }
 
-    argv.push_back(0);
+    argv.push_back(nullptr);
 
     trace() << "invoking:" << argstxt << endl;
 
@@ -282,7 +367,7 @@ int build_local(CompileJob &job, MsgChannel *local_daemon, struct rusage *used)
                         && colorify_wanted(job);
     int pf[2];
 
-    if (color_output && pipe(pf)) {
+    if (color_output && create_large_pipe(pf)) {
         color_output = false;
     }
 
@@ -326,8 +411,8 @@ int build_local(CompileJob &job, MsgChannel *local_daemon, struct rusage *used)
 
         _exit(exitcode);
     }
-    for(vector<char*>::const_iterator i = argv.begin(); i != argv.end(); ++i){
-        free(*i);
+    for(char* const arg : argv){
+        free(arg);
     }
     argv.clear();
 
