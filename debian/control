@@ -10,7 +10,8 @@ Build-Depends: debhelper (>= 11),
  liblzo2-dev,
  libzstd-dev,
  libcap-ng-dev [linux-any],
- libdevstat-dev [kfreebsd-any]
+ libdevstat-dev [kfreebsd-any],
+ pkg-config
 Homepage: https://github.com/icecc/icecream
 Standards-Version: 4.1.4
 Vcs-Git: https://salsa.debian.org/qt-kde-team/extras/icecc.git
