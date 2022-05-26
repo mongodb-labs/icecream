@@ -35,7 +35,7 @@ extern int start_create_env(const std::string &basedir,
                             const std::string &compiler, const std::list<std::string> &extrafiles,
                             const std::string &compression);
 extern size_t finish_create_env(int pipe, const std::string &basedir, std::string &native_environment);
-Environments available_environmnents(const std::string &basename);
+Environments available_environments(const std::string &basename);
 extern pid_t start_install_environment(const std::string &basename,
                                        const std::string &target,
                                        const std::string &name,
@@ -44,8 +44,8 @@ extern pid_t start_install_environment(const std::string &basename,
                                        uid_t user_uid, gid_t user_gid, int extract_priority);
 extern size_t finalize_install_environment(const std::string &basename, const std::string &target,
                                            uid_t user_uid, gid_t user_gid);
-extern size_t remove_environment(const std::string &basedir, const std::string &env);
-extern size_t remove_native_environment(const std::string &env);
+extern void remove_environment_files(const std::string &basedir, const std::string &env);
+extern void remove_native_environment_files(const std::string &env);
 extern void chdir_to_environment(MsgChannel *c, const std::string &dirname, uid_t user_uid, gid_t user_gid);
 extern bool verify_env(MsgChannel *c, const std::string &basedir, const std::string &target,
                        const std::string &env, uid_t user_uid, gid_t user_gid);

@@ -130,7 +130,7 @@ static bool cleanup_directory(const string &directory)
 {
     DIR *dir = opendir(directory.c_str());
 
-    if (dir == NULL) {
+    if (dir == nullptr) {
         return false;
     }
 
@@ -189,7 +189,7 @@ bool cleanup_cache(const string &basedir, uid_t user_uid, gid_t user_gid)
     return true;
 }
 
-Environments available_environmnents(const string &basedir)
+Environments available_environments(const string &basedir)
 {
     Environments envs;
 
@@ -308,11 +308,11 @@ int start_create_env(const string &basedir, uid_t user_uid, gid_t user_gid,
     const int first_to_free = pos;
     argv[pos++] = strdup(compiler.c_str());
 
-    for (list<string>::const_iterator it = extrafiles.begin(); it != extrafiles.end(); ++it) {
-        argv[pos++] = strdup(it->c_str());
+    for (const std::string &extrafile : extrafiles) {
+        argv[pos++] = strdup(extrafile.c_str());
     }
 
-    argv[pos++] = NULL;
+    argv[pos++] = nullptr;
 
     if (!compression.empty()) {
         // icecc will read it from ICECC_ENV_COMPRESSION, we are in a forked process, so simply set it
@@ -600,18 +600,16 @@ size_t finalize_install_environment(const std::string &basename, const std::stri
     return sumup_dir(dirname);
 }
 
-size_t remove_environment(const string &basename, const string &env)
+void remove_environment_files(const string &basename, const string &env)
 {
     string dirname = basename + "/target=" + env;
-
-    size_t res = sumup_dir(dirname);
 
     flush_debug();
     pid_t pid = fork();
 
     if (pid == -1) {
         log_perror("failed to fork");
-        return 0;
+        return;
     }
 
     if (pid) {
@@ -620,11 +618,11 @@ size_t remove_environment(const string &basename, const string &env)
         while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
 
         if (WIFEXITED(status)) {
-            return res;
+            return;
         }
 
-        // something went wrong. assume no disk space was free'd.
-        return 0;
+        // something went wrong.
+        return;
     }
 
     // else
@@ -635,7 +633,7 @@ size_t remove_environment(const string &basename, const string &env)
     argv[1] = strdup("-rf");
     argv[2] = strdup("--");
     argv[3] = strdup(dirname.c_str());
-    argv[4] = NULL;
+    argv[4] = nullptr;
 
     execv(argv[0], argv);
     ostringstream errmsg;
@@ -644,10 +642,10 @@ size_t remove_environment(const string &basename, const string &env)
     _exit(-1);
 }
 
-size_t remove_native_environment(const string &env)
+void remove_native_environment_files(const string &env)
 {
     if (env.empty()) {
-        return 0;
+        return;
     }
 
     struct stat st;
@@ -656,10 +654,7 @@ size_t remove_native_environment(const string &env)
         if (-1 == unlink(env.c_str())){
             log_perror("unlink failed") << "\t" << env << endl;
         }
-        return st.st_size;
     }
-
-    return 0;
 }
 
 static void
@@ -766,7 +761,7 @@ bool verify_env(MsgChannel *client, const string &basedir, const string &target,
     // child
     reset_debug();
     chdir_to_environment(client, dirname, user_uid, user_gid);
-    execl("bin/true", "bin/true", (void*)NULL);
+    execl("bin/true", "bin/true", (void*)nullptr);
     log_perror("execl bin/true failed");
     _exit(-1);
 

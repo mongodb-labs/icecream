@@ -9,8 +9,8 @@ AC_PREREQ([2.63])
 # Development versions: x.y.90
 # Pre-release versions: x.y.z, where z = 90 + X in rcX (1.1rc1 = 1.1.91)
 m4_define([icecream_version_major],[1])
-m4_define([icecream_version_minor],[3])
-m4_define([icecream_version_micro],[1])
+m4_define([icecream_version_minor],[4])
+m4_define([icecream_version_micro],[0])
 m4_ifnblank(icecream_version_micro,
         [m4_define([icecream_version],[icecream_version_major.icecream_version_minor.icecream_version_micro])],
         [m4_define([icecream_version],[icecream_version_major.icecream_version_minor])])
@@ -30,6 +30,21 @@ AC_LANG([C++])
 # ===========================
 AC_PROG_CC
 AC_PROG_CXX
+
+AC_MSG_CHECKING([for C++11 support (-std=c++11)])
+CXXFLAGS="$CXXFLAGS -std=c++11"
+AC_TRY_COMPILE(
+    [
+        constexpr int get_const() { return 5; }
+    ],
+    [
+    ],
+    [
+        AC_MSG_RESULT(yes)
+    ],
+    [ AC_MSG_ERROR(no) ]
+)
+
 if test "$GCC" = yes; then
     cast_align=-Wcast-align
     wshadow=
@@ -54,11 +69,11 @@ if test "$GCC" = yes; then
             wshadow=-Wshadow
         ],
         [ AC_MSG_RESULT(no) ])
-    CFLAGS="-g -W -Wall \
+    CFLAGS="-g -Wall -Wextra \
 -Wshadow -Wpointer-arith $cast_align -Wwrite-strings \
 -Waggregate-return -Wstrict-prototypes -Wmissing-prototypes \
 -Wnested-externs -Wundef $CFLAGS"
-    CXXFLAGS=" -g -W -Wall -Wpointer-arith $cast_align $wshadow -Wwrite-strings -Wundef $CXXFLAGS"
+    CXXFLAGS=" -g -Wall -Wextra -Wpointer-arith $cast_align $wshadow -Wwrite-strings -Wundef $CXXFLAGS"
     AC_MSG_NOTICE([Adding gcc options: $CFLAGS])
 fi
 
@@ -78,12 +93,14 @@ fi
 
 AC_PROG_MAKE_SET
 AC_PROG_INSTALL
+PKG_PROG_PKG_CONFIG
 AC_C_INLINE
 AC_DISABLE_SHARED
 AC_ENABLE_STATIC
 AC_PROG_LIBTOOL
 
-ICECC_LIBCAP_NG_PATH
+AS_CASE([$host], [*linux*], [LIBCAP_NG_DEFAULT=yes], [LIBCAP_NG_DEFAULT=auto])
+PKG_HAVE_DEFINE_WITH_MODULES([LIBCAP_NG], [libcap-ng], , $LIBCAP_NG_DEFAULT)
 
 # =============
 # Documentation
@@ -199,17 +216,12 @@ AC_CHECK_LIB(lzo2, lzo1x_1_compress, LZO_LDADD=-llzo2,
 	AC_MSG_ERROR([Could not find lzo2 library - please install lzo-devel]))
 AC_SUBST(LZO_LDADD)
 
-AC_CHECK_LIB(zstd, ZSTD_compress, ZSTD_LDADD=-lzstd,
-        AC_MSG_ERROR([Could not find zstd library - please install libzstd-devel]))
-AC_SUBST(ZSTD_LDADD)
+PKG_CHECK_MODULES([LIBZSTD], [libzstd])
 
 AC_CHECK_LIB([dl], [dlsym], [DL_LDADD=-ldl])
 AC_SUBST([DL_LDADD])
 
-AC_CHECK_HEADERS([archive.h, archive_entry.h])
-AC_CHECK_LIB(archive, archive_read_data_block, ARCHIVE_LDADD=-larchive,
-    AC_MSG_ERROR([Could not find libarchive library - please install libarchive-devel]))
-AC_SUBST(ARCHIVE_LDADD)
+PKG_CHECK_MODULES([LIBARCHIVE], [libarchive])
 
 AC_MSG_CHECKING([whether libarchive has archive_read_support_filter_xz()])
 AC_TRY_COMPILE(
@@ -374,7 +386,6 @@ AC_CONFIG_FILES([ scheduler/Makefile ])
 AC_CONFIG_FILES([ tests/Makefile ])
 AC_CONFIG_FILES([ unittests/Makefile ])
 AC_CONFIG_FILES([ client/icecc-create-env ])
-AC_CONFIG_FILES([ client/icecc-test-env ])
 AC_CONFIG_FILES([ tests/test-setup.sh ])
 AC_OUTPUT([ suse/icecream.spec ])
 if test "$prefix" = NONE; then

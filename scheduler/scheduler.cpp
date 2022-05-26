@@ -63,7 +63,7 @@
 /* TODO:
    * leak check
    * are all filedescs closed when done?
-   * simplify livetime of the various structures (Jobs/Channels/CompileServers know
+   * simplify lifetime of the various structures (Jobs/Channels/CompileServers know
      of each other and sometimes take over ownership)
  */
 
@@ -112,30 +112,35 @@ static map<unsigned int, Job *> jobs;
 
 /* XXX Uah.  Don't use a queue for the job requests.  It's a hell
    to delete anything out of them (for clean up).  */
-struct UnansweredList {
+// Job requests from one submitter.
+struct JobRequestsGroup {
     list<Job *> l;
     CompileServer *submitter;
+    // Priority as unix nice values 0 (highest) to 20 (lowest).
+    // Values <0 are mapped to 0 (otherwise somebody could use this to starve
+    // the whole cluster).
+    int niceness;
     bool remove_job(Job *);
 };
-static list<UnansweredList *> toanswer;
+// All pending job requests, grouped by the same submitter and niceness value,
+// and sorted with higher priority first.
+static list<JobRequestsGroup *> job_requests;
 
 static list<JobStat> all_job_stats;
 static JobStat cum_job_stats;
 
-static float server_speed(CompileServer *cs, Job *job = 0, bool blockDebug = false);
+static float server_speed(CompileServer *cs, Job *job = nullptr, bool blockDebug = false);
 
 /* Searches the queue for JOB and removes it.
    Returns true if something was deleted.  */
-bool UnansweredList::remove_job(Job *job)
+bool JobRequestsGroup::remove_job(Job *job)
 {
-    list<Job *>::iterator it;
-
-    for (it = l.begin(); it != l.end(); ++it)
+    assert(niceness == job->niceness());
+    for (list<Job *>::iterator it = l.begin(); it != l.end(); ++it)
         if (*it == job) {
             l.erase(it);
             return true;
         }
-
     return false;
 }
 
@@ -239,7 +244,7 @@ static void notify_monitors(Msg *m)
         /* If we can't send it, don't be clever, simply close this monitor.  */
         if (!(*it_old)->send_msg(*m, MsgChannel::SendNonBlocking /*| MsgChannel::SendBulkOnly*/)) {
             trace() << "monitor is blocking... removing" << endl;
-            handle_end(*it_old, 0);
+            handle_end(*it_old, nullptr);
         }
     }
 
@@ -322,7 +327,7 @@ static float server_speed(CompileServer *cs, Job *job, bool blockDebug)
     }
 }
 
-static void handle_monitor_stats(CompileServer *cs, StatsMsg *m = 0)
+static void handle_monitor_stats(CompileServer *cs, StatsMsg *m = nullptr)
 {
     if (monitors.empty()) {
         return;
@@ -378,42 +383,102 @@ static Job *create_new_job(CompileServer *submitter)
 
 static void enqueue_job_request(Job *job)
 {
-    if (!toanswer.empty() && toanswer.back()->submitter == job->submitter()) {
-        toanswer.back()->l.push_back(job);
-    } else {
-        UnansweredList *newone = new UnansweredList();
-        newone->submitter = job->submitter();
-        newone->l.push_back(job);
-        toanswer.push_back(newone);
+    for( list<JobRequestsGroup*>::iterator it = job_requests.begin(); it != job_requests.end(); ++it ) {
+        if( (*it)->submitter == job->submitter() && (*it)->niceness == job->niceness()) {
+            (*it)->l.push_back(job);
+            return;
+        }
+        if( (*it)->niceness > job->niceness()) { // lower priority starts here, insert group
+            JobRequestsGroup *newone = new JobRequestsGroup();
+            newone->submitter = job->submitter();
+            newone->niceness = job->niceness();
+            newone->l.push_back(job);
+            job_requests.insert(it, newone);
+            return;
+        }
     }
+    JobRequestsGroup *newone = new JobRequestsGroup();
+    newone->submitter = job->submitter();
+    newone->niceness = job->niceness();
+    newone->l.push_back(job);
+    job_requests.push_back(newone);
 }
 
-static Job *get_job_request(void)
+static void enqueue_job_requests_group(JobRequestsGroup* group) {
+    for( list<JobRequestsGroup*>::iterator it = job_requests.begin(); it != job_requests.end(); ++it ) {
+        if( (*it)->niceness > group->niceness) { // lower priority starts here, insert group
+            job_requests.insert(it, group);
+            return;
+        }
+    }
+    job_requests.push_back(group);
+}
+
+// Gives a position in job_requests, used to iterate items.
+struct JobRequestPosition
 {
-    if (toanswer.empty()) {
-        return 0;
+    JobRequestPosition() : group( nullptr ), job( nullptr ) {}
+    JobRequestPosition(JobRequestsGroup* g, Job* j) : group( g ), job( j ) {}
+    bool isValid() const { return group != nullptr; }
+    JobRequestsGroup* group;
+    Job* job;
+};
+
+static JobRequestPosition get_first_job_request()
+{
+    if (job_requests.empty()) {
+        return JobRequestPosition();
     }
 
-    UnansweredList *first = toanswer.front();
+    JobRequestsGroup *first = job_requests.front();
     assert(!first->l.empty());
-    return first->l.front();
+    return JobRequestPosition( first, first->l.front());
 }
 
-/* Removes the first job request (the one returned by get_job_request()) */
-static void remove_job_request(void)
+static JobRequestPosition get_next_job_request(const JobRequestPosition& pos)
 {
-    if (toanswer.empty()) {
-        return;
+    assert(!job_requests.empty());
+    assert(pos.group != nullptr && pos.job != nullptr);
+
+    JobRequestsGroup* group = pos.group;
+    // Get next job in the same group.
+    list<Job*>::iterator jobIt = std::find(group->l.begin(), group->l.end(), pos.job);
+    assert(jobIt != group->l.end());
+    ++jobIt;
+    if( jobIt != group->l.end())
+        return JobRequestPosition( group, *jobIt );
+    // Get next group.
+    list<JobRequestsGroup*>::iterator groupIt = std::find(job_requests.begin(), job_requests.end(), group);
+    assert(groupIt != job_requests.end());
+    ++groupIt;
+    if( groupIt != job_requests.end())
+    {
+        group = *groupIt;
+        assert(!group->l.empty());
+        return JobRequestPosition( group, group->l.front());
     }
+    // end
+    return JobRequestPosition();
+}
 
-    UnansweredList *first = toanswer.front();
-    toanswer.pop_front();
-    first->l.pop_front();
+// Removes the given job request.
+// Also tries to rotate submitters in a round-robin fashion to try to serve
+// them all fairly.
+static void remove_job_request(const JobRequestPosition& pos)
+{
+    assert(!job_requests.empty());
+    assert(pos.group != nullptr && pos.job != nullptr);
 
-    if (first->l.empty()) {
-        delete first;
+    JobRequestsGroup* group = pos.group;
+    assert(std::find(job_requests.begin(), job_requests.end(), group) != job_requests.end());
+    job_requests.remove(group);
+    assert(std::find(group->l.begin(), group->l.end(), pos.job) != group->l.end());
+    group->remove_job(pos.job);
+
+    if (group->l.empty()) {
+        delete group;
     } else {
-        toanswer.push_back(first);
+        enqueue_job_requests_group(group);
     }
 }
 
@@ -431,7 +496,7 @@ static bool handle_cs_request(MsgChannel *cs, Msg *_m)
 
     submitter->setClientCount(m->client_count);
 
-    Job *master_job = 0;
+    Job *master_job = nullptr;
 
     for (unsigned int i = 0; i < m->count; ++i) {
         Job *job = create_new_job(submitter);
@@ -463,6 +528,7 @@ static bool handle_cs_request(MsgChannel *cs, Msg *_m)
         job->setPreferredHost(m->preferred_host);
         job->setMinimalHostVersion(m->minimal_host_version);
         job->setRequiredFeatures(m->required_features);
+        job->setNiceness(max(0, min(20,int(m->niceness))));
         enqueue_job_request(job);
         std::ostream &dbg = log_info();
         dbg << "NEW " << job->id() << " client="
@@ -479,7 +545,7 @@ static bool handle_cs_request(MsgChannel *cs, Msg *_m)
             }
         }
 
-        dbg << "] " << m->filename << " " << job->language() << endl;
+        dbg << "] " << m->filename << " " << job->language() << " " << job->niceness() << endl;
         notify_monitors(new MonGetCSMsg(job->id(), submitter->hostId(), m));
 
         if (!master_job) {
@@ -591,66 +657,59 @@ static CompileServer *pick_server(Job *job)
 
     /* if the user wants to test/prefer one specific daemon, we look for that one first */
     if (!job->preferredHost().empty()) {
-        for (list<CompileServer *>::iterator it = css.begin(); it != css.end(); ++it) {
-            if ((*it)->matches(job->preferredHost()) && (*it)->is_eligible_now(job)) {
+        for (CompileServer* const cs : css) {
+            if (cs->matches(job->preferredHost()) && cs->is_eligible_now(job)) {
 #if DEBUG_SCHEDULER > 1
-                trace() << "taking preferred " << (*it)->nodeName() << " " <<  server_speed(*it, job, true) << endl;
+                trace() << "taking preferred " << cs->nodeName() << " " <<  server_speed(cs, job, true) << endl;
 #endif
-                return *it;
+                return cs;
             }
         }
 
-        return 0;
+        return nullptr;
     }
 
     /* If we have no statistics simply use any server which is usable.  */
     if (!all_job_stats.size ()) {
-        CompileServer *selected = NULL;
+        CompileServer *selected = nullptr;
         int eligible_count = 0;
 
-        for (list<CompileServer *>::iterator it = css.begin(); it != css.end(); ++it) {
-            if ((*it)->is_eligible_now( job )) {
+        for (CompileServer* const cs : css) {
+            if (cs->is_eligible_now( job )) {
                 ++eligible_count;
                 // Do not select the first one (which could be broken and so we might never get job stats),
                 // but rather select randomly.
                 if( random() % eligible_count == 0 )
-                  selected = *it;
+                  selected = cs;
             }
         }
 
-        if( selected != NULL ) {
+        if( selected != nullptr ) {
             trace() << "no job stats - returning randomly selected " << selected->nodeName() << " load: " << selected->load() << " can install: " << selected->can_install(job) << endl;
             return selected;
         }
 
-        return 0;
+        return nullptr;
     }
 
-    CompileServer *best = 0;
+    CompileServer *best = nullptr;
     // best uninstalled
-    CompileServer *bestui = 0;
+    CompileServer *bestui = nullptr;
     // best preloadable host
-    CompileServer *bestpre = 0;
+    CompileServer *bestpre = nullptr;
 
     uint matches = 0;
 
-    for (list<CompileServer *>::iterator it = css.begin(); it != css.end(); ++it) {
-        CompileServer *cs = *it;
-
-        /* For now ignore overloaded servers.  */
-        /* Pre-loadable (cs->jobList().size()) == (cs->maxJobs()) is checked later.  */
-        if ((int(cs->jobList().size()) > cs->maxJobs()) || (cs->load() >= 1000)) {
-#if DEBUG_SCHEDULER > 1
-            trace() << "overloaded " << cs->nodeName() << " " << cs->jobList().size() << "/"
-                    <<  cs->maxJobs() << " jobs, load:" << cs->load() << endl;
-#endif
-            continue;
-        }
+    for (CompileServer * const cs : css) {
 
         // Ignore ineligible servers
         if (!cs->is_eligible_now(job)) {
 #if DEBUG_SCHEDULER > 1
-            trace() << cs->nodeName() << " not eligible" << endl;
+            if ((int(cs->jobList().size()) >= cs->maxJobs() + cs->maxPreloadCount()) || (cs->load() >= 1000)) {
+                trace() << "overloaded " << cs->nodeName() << " " << cs->jobList().size() << "/"
+                        <<  cs->maxJobs() << " jobs, load:" << cs->load() << endl;
+            } else
+                trace() << cs->nodeName() << " not eligible" << endl;
 #endif
             continue;
         }
@@ -770,14 +829,14 @@ static time_t prune_servers()
 {
     list<CompileServer *>::iterator it;
 
-    time_t now = time(0);
+    time_t now = time(nullptr);
     time_t min_time = MAX_SCHEDULER_PING;
 
     for (it = controls.begin(); it != controls.end();) {
         if ((now - (*it)->last_talk) >= MAX_SCHEDULER_PING) {
             CompileServer *old = *it;
             ++it;
-            handle_end(old, 0);
+            handle_end(old, nullptr);
             continue;
         }
 
@@ -797,7 +856,7 @@ static time_t prune_servers()
             trace() << "busy installing for a long time - removing " << (*it)->nodeName() << endl;
             CompileServer *old = *it;
             ++it;
-            handle_end(old, 0);
+            handle_end(old, nullptr);
             continue;
         }
 
@@ -814,7 +873,7 @@ static time_t prune_servers()
 
                 if ((*it)->send_msg(PingMsg())) {
                     // give it MAX_SCHEDULER_PONG to answer a ping
-                    (*it)->last_talk = time(0) - MAX_SCHEDULER_PING
+                    (*it)->last_talk = time(nullptr) - MAX_SCHEDULER_PING
                                        + 2 * MAX_SCHEDULER_PONG;
                     min_time = min(min_time, (time_t) 2 * MAX_SCHEDULER_PONG);
                     ++it;
@@ -826,7 +885,7 @@ static time_t prune_servers()
             trace() << "removing " << (*it)->nodeName() << endl;
             CompileServer *old = *it;
             ++it;
-            handle_end(old, 0);
+            handle_end(old, nullptr);
             continue;
         } else {
             min_time = min(min_time, MAX_SCHEDULER_PING - now + (*it)->last_talk);
@@ -849,82 +908,67 @@ static time_t prune_servers()
     return min_time;
 }
 
-static Job *delay_current_job()
-{
-    assert(!toanswer.empty());
-
-    if (toanswer.size() == 1) {
-        return 0;
-    }
-
-    UnansweredList *first = toanswer.front();
-    toanswer.pop_front();
-    toanswer.push_back(first);
-    return get_job_request();
-}
-
 static bool empty_queue()
 {
-    Job *job = get_job_request();
-
-    if (!job) {
+    JobRequestPosition jobPosition = get_first_job_request();
+    if (!jobPosition.isValid()) {
         return false;
     }
 
     assert(!css.empty());
 
-    Job *first_job = job;
-    CompileServer *cs = 0;
+    CompileServer *use_cs = nullptr;
+    Job* job = jobPosition.job;
 
     while (true) {
-        cs = pick_server(job);
+        use_cs = pick_server(job);
 
-        if (cs) {
+        if (use_cs) {
             break;
         }
 
         /* Ignore the load on the submitter itself if no other host could
            be found.  We only obey to its max job number.  */
-        cs = job->submitter();
-
-        if (!((int(cs->jobList().size()) < cs->maxJobs())
+        use_cs = job->submitter();
+        if ((int(use_cs->jobList().size()) < use_cs->maxJobs())
                 && job->preferredHost().empty()
                 /* This should be trivially true.  */
-                && cs->can_install(job).size())) {
-            job = delay_current_job();
+                && use_cs->can_install(job).size()) {
+            break;
+        }
 
-            if ((job == first_job) || !job) { // no job found in the whole toanswer list
-                job = first_job;
-                for (list<CompileServer *>::iterator it = css.begin(); it != css.end(); ++it) {
-                    if(!job->preferredHost().empty() && !(*it)->matches(job->preferredHost()))
-                        continue;
-                    if((*it)->is_eligible_ever(job)) {
-                        trace() << "No suitable host found, delaying" << endl;
-                        return false;
-                    }
+        jobPosition = get_next_job_request( jobPosition );
+        if (!jobPosition.isValid()) { // no job found in the whole job_requests list
+            jobPosition = get_first_job_request();
+            assert( jobPosition.isValid());
+            job = jobPosition.job;
+            for (CompileServer * const cs : css) {
+                if(!job->preferredHost().empty() && !cs->matches(job->preferredHost()))
+                    continue;
+                if(cs->is_eligible_ever(job)) {
+                    trace() << "No suitable host found, delaying" << endl;
+                    return false;
                 }
-                // This means that there's nobody who could possibly handle the job,
-                // so there's no point in delaying.
-                log_info() << "No suitable host found, assigning submitter" << endl;
-                cs = job->submitter();
-                break;
             }
-        } else {
+            // This means that there's nobody who could possibly handle the job,
+            // so there's no point in delaying.
+            log_info() << "No suitable host found, assigning submitter" << endl;
+            use_cs = job->submitter();
             break;
         }
     }
 
-    remove_job_request();
+    remove_job_request( jobPosition );
 
     job->setState(Job::WAITINGFORCS);
-    job->setServer(cs);
+    job->setServer(use_cs);
 
-    string host_platform = envs_match(cs, job);
+    string host_platform = envs_match(use_cs, job);
     bool gotit = true;
 
     if (host_platform.empty()) {
         gotit = false;
-        host_platform = cs->can_install(job);
+        host_platform = use_cs->can_install(job);
     }
 
     // mix and match between job ids
@@ -936,7 +980,7 @@ static bool empty_queue()
             l != lastRequestedJobs.end(); ++l) {
         unsigned rcount = 0;
 
-        list<JobStat> lastCompiledJobs = cs->lastCompiledJobs();
+        list<JobStat> lastCompiledJobs = use_cs->lastCompiledJobs();
         for (list<JobStat>::const_iterator r = lastCompiledJobs.begin();
                 r != lastCompiledJobs.end(); ++r) {
             if (l->jobId() == r->jobId()) {
@@ -952,22 +996,22 @@ static bool empty_queue()
             break;
         }
     }
-    if(IS_PROTOCOL_37(job->submitter()) && cs == job->submitter())
+    if(IS_PROTOCOL_37(job->submitter()) && use_cs == job->submitter())
     {
         NoCSMsg m2(job->id(), job->localClientId());
         if (!job->submitter()->send_msg(m2)) {
             trace() << "failed to deliver job " << job->id() << endl;
-            handle_end(job->submitter(), 0);   // will care for the rest
+            handle_end(job->submitter(), nullptr);   // will care for the rest
             return true;
         }
     }
     else
     {
-        UseCSMsg m2(host_platform, cs->name, cs->remotePort(), job->id(),
+        UseCSMsg m2(host_platform, use_cs->name, use_cs->remotePort(), job->id(),
                 gotit, job->localClientId(), matched_job_id);
         if (!job->submitter()->send_msg(m2)) {
             trace() << "failed to deliver job " << job->id() << endl;
-            handle_end(job->submitter(), 0);   // will care for the rest
+            handle_end(job->submitter(), nullptr);   // will care for the rest
             return true;
         }
     }
@@ -975,16 +1019,16 @@ static bool empty_queue()
 
 #if DEBUG_SCHEDULER >= 0
     if (!gotit) {
-        trace() << "put " << job->id() << " in joblist of " << cs->nodeName() << " (will install now)" << endl;
+        trace() << "put " << job->id() << " in joblist of " << use_cs->nodeName() << " (will install now)" << endl;
     } else {
-        trace() << "put " << job->id() << " in joblist of " << cs->nodeName() << endl;
+        trace() << "put " << job->id() << " in joblist of " << use_cs->nodeName() << endl;
     }
 #endif
-    cs->appendJob(job);
+    use_cs->appendJob(job);
 
     /* if it doesn't have the environment, it will get it. */
     if (!gotit) {
-        cs->setBusyInstalling(time(0));
+        use_cs->setBusyInstalling(time(nullptr));
     }
 
     string env;
@@ -992,7 +1036,7 @@ static bool empty_queue()
     if (!job->masterJobFor().empty()) {
         Environments environments = job->environments();
         for (Environments::const_iterator it = environments.begin(); it != environments.end(); ++it) {
-            if (it->first == cs->hostPlatform()) {
+            if (it->first == use_cs->hostPlatform()) {
                 env = it->second;
                 break;
             }
@@ -1001,10 +1045,10 @@ static bool empty_queue()
 
     if (!env.empty()) {
         list<Job *> masterJobFor = job->masterJobFor();
-        for (list<Job *>::iterator it = masterJobFor.begin(); it != masterJobFor.end(); ++it) {
+        for (Job * const jobTmp : masterJobFor) {
             // remove all other environments
-            (*it)->clearEnvironments();
-            (*it)->appendEnvironment(make_pair(cs->hostPlatform(), env));
+            jobTmp->clearEnvironments();
+            jobTmp->appendEnvironment(make_pair(use_cs->hostPlatform(), env));
         }
     }
 
@@ -1057,7 +1101,7 @@ static bool handle_login(CompileServer *cs, Msg *_m)
         if (cs->eq_ip(*(*it)) && cs->nodeName() == (*it)->nodeName()) {
             CompileServer *old = *it;
             ++it;
-            handle_end(old, 0);
+            handle_end(old, nullptr);
             continue;
         }
 
@@ -1147,7 +1191,7 @@ static bool handle_job_begin(CompileServer *cs, Msg *_m)
 
     job->setState(Job::COMPILING);
     job->setStartTime(m->stime);
-    job->setStartOnScheduler(time(0));
+    job->setStartOnScheduler(time(nullptr));
     notify_monitors(new MonJobBeginMsg(m->job_id, m->stime, cs->hostId()));
 #if DEBUG_SCHEDULER >= 0
     trace() << "BEGIN: " << m->job_id << " client=" << job->submitter()->nodeName()
@@ -1168,7 +1212,7 @@ static bool handle_job_done(CompileServer *cs, Msg *_m)
         return false;
     }
 
-    Job *j = 0;
+    Job *j = nullptr;
 
     if (uint32_t clientId = m->unknown_job_client_id()) {
         // The daemon has sent a done message for a job for which it doesn't know the job id (happens
@@ -1181,18 +1225,18 @@ static bool handle_job_done(CompileServer *cs, Msg *_m)
                     << " " << job->state() << " " << job->localClientId() << " " << clientId
                     << endl;
 
-            if (job->server() == 0 && job->submitter() == cs && job->localClientId() == clientId) {
+            if (job->server() == nullptr && job->submitter() == cs && job->localClientId() == clientId) {
                 trace() << "STOP (WAITFORCS) FOR " << mit->first << endl;
                 j = job;
                 m->set_job_id( j->id()); // Now we know the job's id.
 
-                /* Unfortunately the toanswer queues are also tagged based on the daemon,
+                /* Unfortunately the job_requests queues are also tagged based on the daemon,
                 so we need to clean them up also.  */
-                list<UnansweredList *>::iterator it;
+                list<JobRequestsGroup *>::iterator it;
 
-                for (it = toanswer.begin(); it != toanswer.end(); ++it)
+                for (it = job_requests.begin(); it != job_requests.end(); ++it)
                     if ((*it)->submitter == cs) {
-                        UnansweredList *l = *it;
+                        JobRequestsGroup *l = *it;
                         list<Job *>::iterator jit;
 
                         for (jit = l->l.begin(); jit != l->l.end(); ++jit) {
@@ -1203,7 +1247,7 @@ static bool handle_job_done(CompileServer *cs, Msg *_m)
                         }
 
                         if (l->l.empty()) {
-                            it = toanswer.erase(it);
+                            it = job_requests.erase(it);
                             break;
                         }
                     }
@@ -1223,7 +1267,7 @@ static bool handle_job_done(CompileServer *cs, Msg *_m)
         log_info() << "server: " << j->server()->nodeName() << endl;
         log_info() << "msg came from: " << cs->nodeName() << endl;
         // the daemon is not following matz's rules: kick him
-        handle_end(cs, 0);
+        handle_end(cs, nullptr);
         return false;
     }
 
@@ -1232,7 +1276,7 @@ static bool handle_job_done(CompileServer *cs, Msg *_m)
         log_info() << "submitter: " << j->submitter()->nodeName() << endl;
         log_info() << "msg came from: " << cs->nodeName() << endl;
         // the daemon is not following matz's rules: kick him
-        handle_end(cs, 0);
+        handle_end(cs, nullptr);
         return false;
     }
 
@@ -1282,7 +1326,7 @@ static bool handle_job_done(CompileServer *cs, Msg *_m)
 
 static bool handle_ping(CompileServer *cs, Msg * /*_m*/)
 {
-    cs->last_talk = time(0);
+    cs->last_talk = time(nullptr);
 
     if (cs->maxJobs() < 0) {
         cs->setMaxJobs(cs->maxJobs() * -1);
@@ -1302,18 +1346,18 @@ static bool handle_stats(CompileServer *cs, Msg *_m)
     /* Before protocol 25, ping and stat handling was
        clutched together.  */
     if (!IS_PROTOCOL_25(cs)) {
-        cs->last_talk = time(0);
+        cs->last_talk = time(nullptr);
 
-        if (cs && (cs->maxJobs() < 0)) {
+        if (cs->maxJobs() < 0) {
             cs->setMaxJobs(cs->maxJobs() * -1);
         }
     }
 
-    for (list<CompileServer *>::iterator it = css.begin(); it != css.end(); ++it)
-        if (*it == cs) {
-            (*it)->setLoad(m->load);
-            (*it)->setClientCount(m->client_count);
-            handle_monitor_stats(*it, m);
+    for (CompileServer * const c : css)
+        if (c == cs) {
+            c->setLoad(m->load);
+            c->setClientCount(m->client_count);
+            handle_monitor_stats(c, m);
             return true;
         }
 
@@ -1396,7 +1440,7 @@ static void split_string(const string &s, const char *set, list<string> &l)
 static bool handle_control_login(CompileServer *cs)
 {
     cs->setType(CompileServer::LINE);
-    cs->last_talk = time(0);
+    cs->last_talk = time(nullptr);
     cs->setBulkTransfer();
     cs->setState(CompileServer::LOGGEDIN);
     assert(find(controls.begin(), controls.end(), cs) == controls.end());
@@ -1404,7 +1448,7 @@ static bool handle_control_login(CompileServer *cs)
 
     std::ostringstream o;
     o << "200-ICECC " VERSION ": "
-      << time(0) - starttime << "s uptime, "
+      << time(nullptr) - starttime << "s uptime, "
       << css.size() << " hosts, "
       << jobs.size() << " jobs in queue "
       << "(" << new_job_id << " total)." << endl;
@@ -1425,7 +1469,7 @@ static bool handle_line(CompileServer *cs, Msg *_m)
     split_string(m->text, " \t\n", l);
     string cmd;
 
-    cs->last_talk = time(0);
+    cs->last_talk = time(nullptr);
 
     if (l.empty()) {
         cmd = "";
@@ -1436,17 +1480,17 @@ static bool handle_line(CompileServer *cs, Msg *_m)
     }
 
     if (cmd == "listcs") {
-        for (list<CompileServer *>::iterator it = css.begin(); it != css.end(); ++it) {
+        for (CompileServer * const it : css) {
             char buffer[1000];
-            sprintf(buffer, " (%s:%d) ", (*it)->name.c_str(), (*it)->remotePort());
-            line = " " + (*it)->nodeName() + buffer;
-            line += "[" + (*it)->hostPlatform() + "] speed=";
-            sprintf(buffer, "%.2f jobs=%d/%d load=%d", server_speed(*it),
-                    (int)(*it)->jobList().size(), (*it)->maxJobs(), (*it)->load());
+            sprintf(buffer, " (%s:%u) ", it->name.c_str(), it->remotePort());
+            line = " " + it->nodeName() + buffer;
+            line += "[" + it->hostPlatform() + "] speed=";
+            sprintf(buffer, "%.2f jobs=%d/%d load=%u", server_speed(it),
+                    (int)it->jobList().size(), it->maxJobs(), it->load());
             line += buffer;
 
-            if ((*it)->busyInstalling()) {
-                sprintf(buffer, " busy installing since %ld s",  time(0) - (*it)->busyInstalling());
+            if (it->busyInstalling()) {
+                sprintf(buffer, " busy installing since %ld s",  time(nullptr) - it->busyInstalling());
                 line += buffer;
             }
 
@@ -1454,7 +1498,7 @@ static bool handle_line(CompileServer *cs, Msg *_m)
                 return false;
             }
 
-            list<Job *> jobList = (*it)->jobList();
+            list<Job *> jobList = it->jobList();
             for (list<Job *>::const_iterator it2 = jobList.begin(); it2 != jobList.end(); ++it2) {
                 if (!cs->send_msg(TextMsg("   " + dump_job(*it2)))) {
                     return false;
@@ -1474,7 +1518,7 @@ static bool handle_line(CompileServer *cs, Msg *_m)
                 return false;
             }
     } else if (cmd == "quit" || cmd == "exit") {
-        handle_end(cs, 0);
+        handle_end(cs, nullptr);
         return false;
     } else if (cmd == "removecs" || cmd == "blockcs") {
         if (l.empty()) {
@@ -1485,10 +1529,10 @@ static bool handle_line(CompileServer *cs, Msg *_m)
             for (list<string>::const_iterator si = l.begin(); si != l.end(); ++si) {
                 if (cmd == "blockcs")
                     block_css.push_back(*si);
-                for (list<CompileServer *>::iterator it = css.begin(); it != css.end(); ++it) {
-                    if ((*it)->matches(*si)) {
+                for (CompileServer * const it : css) {
+                    if (it->matches(*si)) {
                         if (cs->send_msg(TextMsg(string("removing host ") + *si))) {
-                            handle_end(*it, 0);
+                            handle_end(it, nullptr);
                         }
                         break;
                     }
@@ -1510,14 +1554,14 @@ static bool handle_line(CompileServer *cs, Msg *_m)
             }
         }
     } else if (cmd == "internals") {
-        for (list<CompileServer *>::iterator it = css.begin(); it != css.end(); ++it) {
-            Msg *msg = NULL;
+        for (CompileServer * const it : css) {
+            Msg *msg = nullptr;
 
             if (!l.empty()) {
                 list<string>::const_iterator si;
 
                 for (si = l.begin(); si != l.end(); ++si) {
-                    if ((*it)->matches(*si)) {
+                    if (it->matches(*si)) {
                         break;
                     }
                 }
@@ -1527,8 +1571,8 @@ static bool handle_line(CompileServer *cs, Msg *_m)
                 }
             }
 
-            if ((*it)->send_msg(GetInternalStatus())) {
-                msg = (*it)->get_msg();
+            if (it->send_msg(GetInternalStatus())) {
+                msg = it->get_msg();
             }
 
             if (msg && msg->type == M_STATUS_TEXT) {
@@ -1536,7 +1580,7 @@ static bool handle_line(CompileServer *cs, Msg *_m)
                     return false;
                 }
             } else {
-                if (!cs->send_msg(TextMsg((*it)->nodeName() + " not reporting\n"))) {
+                if (!cs->send_msg(TextMsg(it->nodeName() + " not reporting\n"))) {
                     return false;
                 }
             }
@@ -1619,12 +1663,12 @@ static bool handle_end(CompileServer *toremove, Msg *m)
          disconnect soon too.  */
         css.remove(toremove);
 
-        /* Unfortunately the toanswer queues are also tagged based on the daemon,
+        /* Unfortunately the job_requests queues are also tagged based on the daemon,
            so we need to clean them up also.  */
 
-        for (list<UnansweredList *>::iterator it = toanswer.begin(); it != toanswer.end();) {
+        for (list<JobRequestsGroup *>::iterator it = job_requests.begin(); it != job_requests.end();) {
             if ((*it)->submitter == toremove) {
-                UnansweredList *l = *it;
+                JobRequestsGroup *l = *it;
                 list<Job *>::iterator jit;
 
                 for (jit = l->l.begin(); jit != l->l.end(); ++jit) {
@@ -1640,7 +1684,7 @@ static bool handle_end(CompileServer *toremove, Msg *m)
                 }
 
                 delete l;
-                it = toanswer.erase(it);
+                it = job_requests.erase(it);
             } else {
                 ++it;
             }
@@ -1670,8 +1714,8 @@ static bool handle_end(CompileServer *toremove, Msg *m)
             }
         }
 
-        for (list<CompileServer *>::iterator itr = css.begin(); itr != css.end(); ++itr) {
-            (*itr)->eraseCSFromBlacklist(toremove);
+        for (CompileServer * const cs : css) {
+            cs->eraseCSFromBlacklist(toremove);
         }
 
         break;
@@ -1824,7 +1868,7 @@ static int open_tcp_listener(short port, const string &interface)
     return fd;
 }
 
-static void usage(const char *reason = 0)
+static void usage(const char *reason = nullptr)
 {
     if (reason) {
         cerr << reason << endl;
@@ -1888,11 +1932,11 @@ static void handle_scheduler_announce(const char* buf, const char* netname, bool
                     {
                         while (!css.empty())
                         {
-                            handle_end(css.front(), NULL);
+                            handle_end(css.front(), nullptr);
                         }
                         while (!monitors.empty())
                         {
-                            handle_end(monitors.front(), NULL);
+                            handle_end(monitors.front(), nullptr);
                         }
                     }
                 }
@@ -1934,15 +1978,15 @@ int main(int argc, char *argv[])
     while (true) {
         int option_index = 0;
         static const struct option long_options[] = {
-            { "netname", 1, NULL, 'n' },
-            { "help", 0, NULL, 'h' },
-            { "persistent-client-connection", 0, NULL, 'r' },
-            { "interface", 1, NULL, 'i' },
-            { "port", 1, NULL, 'p' },
-            { "daemonize", 0, NULL, 'd'},
-            { "log-file", 1, NULL, 'l'},
-            { "user-uid", 1, NULL, 'u'},
-            { 0, 0, 0, 0 }
+            { "netname", 1, nullptr, 'n' },
+            { "help", 0, nullptr, 'h' },
+            { "persistent-client-connection", 0, nullptr, 'r' },
+            { "interface", 1, nullptr, 'i' },
+            { "port", 1, nullptr, 'p' },
+            { "daemonize", 0, nullptr, 'd'},
+            { "log-file", 1, nullptr, 'l'},
+            { "user-uid", 1, nullptr, 'u'},
+            { nullptr, 0, nullptr, 0 }
         };
 
         const int c = getopt_long(argc, argv, "n:i:p:hl:vdru:", long_options, &option_index);
@@ -2060,7 +2104,7 @@ int main(int argc, char *argv[])
             logfile = "/var/log/icecc/scheduler.log";
         }
 
-        if (setgroups(0, NULL) < 0) {
+        if (setgroups(0, nullptr) < 0) {
             log_perror("setgroups() failed");
             return 1;
         }
@@ -2110,8 +2154,8 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    starttime = time(0);
-    if( getenv( "ICECC_FAKE_STARTTIME" ) != NULL )
+    starttime = time(nullptr);
+    if( getenv( "ICECC_FAKE_STARTTIME" ) != nullptr )
         starttime -= 1000;
 
     ofstream pidFile;
@@ -2143,16 +2187,16 @@ int main(int argc, char *argv[])
         /* Announce ourselves from time to time, to make other possible schedulers disconnect
            their daemons if we are the preferred scheduler (daemons with version new enough
            should automatically select the best scheduler, but old daemons connect randomly). */
-        if (last_announce + 120 < time(NULL)) {
+        if (last_announce + 120 < time(nullptr)) {
             Broadcasts::broadcastSchedulerVersion(scheduler_port, netname, starttime);
-            last_announce = time(NULL);
+            last_announce = time(nullptr);
         }
 
         vector< pollfd > pollfds;
         pollfds.reserve( fd2cs.size() + css.size() + 5 );
         pollfd pfd; // tmp variable
 
-        if (time(0) >= next_listen) {
+        if (time(nullptr) >= next_listen) {
             pfd.fd = listen_fd;
             pfd.events = POLLIN;
             pollfds.push_back( pfd );
@@ -2188,12 +2232,12 @@ int main(int argc, char *argv[])
         }
 
         list<CompileServer *> cs_in_tsts;
-        for (list<CompileServer *>::iterator it = css.begin(); it != css.end(); ++it)
+        for (CompileServer * const cs : css)
         {
-            if ((*it)->getConnectionInProgress())
+            if (cs->getConnectionInProgress())
             {
-                int csInFd = (*it)->getInFd();
-                cs_in_tsts.push_back(*it);
+                int csInFd = cs->getInFd();
+                cs_in_tsts.push_back(cs);
                 pfd.fd = csInFd;
                 pfd.events = POLLIN | POLLOUT;
                 pollfds.push_back( pfd );
@@ -2239,7 +2283,7 @@ int main(int argc, char *argv[])
                 if (remote_fd >= 0) {
                     CompileServer *cs = new CompileServer(remote_fd, (struct sockaddr *) &remote_addr, remote_len, false);
                     trace() << "accepted " << cs->name << endl;
-                    cs->last_talk = time(0);
+                    cs->last_talk = time(nullptr);
 
                     if (!cs->protocol) { // protocol mismatch
                         delete cs;
@@ -2256,7 +2300,7 @@ int main(int argc, char *argv[])
                 }
             }
 
-            next_listen = time(0) + 1;
+            next_listen = time(nullptr) + 1;
         }
 
         if (active_fds && pollfd_is_set(pollfds, text_fd, POLLIN)) {
@@ -2277,7 +2321,7 @@ int main(int argc, char *argv[])
                 fd2cs[cs->fd] = cs;
 
                 if (!handle_control_login(cs)) {
-                    handle_end(cs, 0);
+                    handle_end(cs, nullptr);
                     continue;
                 }
 
@@ -2372,9 +2416,9 @@ int main(int argc, char *argv[])
 
     shutdown(broad_fd, SHUT_RDWR);
     while (!css.empty())
-        handle_end(css.front(), NULL);
+        handle_end(css.front(), nullptr);
     while (!monitors.empty())
-        handle_end(monitors.front(), NULL);
+        handle_end(monitors.front(), nullptr);
     if ((-1 == close(broad_fd)) && (errno != EBADF)){
         log_perror("close failed");
     }
