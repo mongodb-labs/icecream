@@ -1,3 +1,10 @@
+icecc (1.4-1~ppa2) UNRELEASED; urgency=medium
+
+  * Fix daemon setting an incorrect memory limit
+  * Fix call_cpp() locking behavior allowing more than max_cpu active threads
+
+ -- Ryan Egesdahl <ryan.egesdahl@mongodb.com>  Wed, 22 Jun 2022 17:34:25 -0700
+
 icecc (1.4-1~ppa1) UNKNOWN; urgency=medium
 
     * New upstream release.
