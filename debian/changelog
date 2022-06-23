@@ -1,10 +1,17 @@
-icecc (1.4-1~ppa2+bionic1) bionic; urgency=medium
+icecc (1.4-1~ppa3+bionic1) bionic; urgency=medium
+
+  * Fix daemon setting an incorrect memory limit
+  * Fix call_cpp() locking behavior allowing more than max_cpu active threads
+
+ -- Ryan Egesdahl <ryan.egesdahl@mongodb.com>  Wed, 22 Jun 2022 17:34:25 -0700
+
+icecc (1.4-1~ppa1) UNKNOWN; urgency=medium
 
     * New upstream release.
 
  -- MongoDB SDP Team <dev-prod-devplatform@10gen.com>  Wed, 25 May 2022 05:03:15 +0000
 
-icecc (1.3.1-1~ppa2) bionic; urgency=medium
+icecc (1.3.1-1~ppa2) UNKNOWN; urgency=medium
 
     * New upstream release.
 
