@@ -1,0 +1,53 @@
+From 790ba75a0f3f5c9216fc568758f5cf8ea6132ea0 Mon Sep 17 00:00:00 2001
+From: Nakhyun Choi <sorkdkflgkgk@gmail.com>
+Date: Tue, 29 Sep 2020 19:57:57 +0900
+Subject: [PATCH] fix daemon setting wrong memory limitation
+
+---
+ daemon/load.cpp | 10 +++++++---
+ 1 file changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/daemon/load.cpp b/daemon/load.cpp
+index 82c457b..961cc9b 100644
+--- a/daemon/load.cpp
++++ b/daemon/load.cpp
+@@ -240,7 +240,7 @@ static unsigned long int scan_one(const char *buff, const char *key)
+ }
+ #endif
+ 
+-static unsigned int calculateMemLoad(unsigned long int &NetMemFree)
++static unsigned int calculateMemLoad(unsigned long long &NetMemFree)
+ {
+     unsigned long long MemTotal = 0, MemFree = 0, Buffers = 0, Cached = 0;
+ 
+@@ -272,6 +272,11 @@ static unsigned int calculateMemLoad(unsigned long int &NetMemFree)
+         }
+     }
+ #endif
++    /* Bytes -> Kbytes */
++    MemFree /= 1024;
++    MemTotal /= 1024;
++    Buffers /= 1024;
++    Cached /= 1024;
+ 
+ #elif defined( USE_SYSCTL )
+     size_t len = sizeof(MemFree);
+@@ -412,7 +417,7 @@ void fill_stats(unsigned long &myidleload, unsigned long &myniceload, unsigned i
+     myniceload = load.niceLoad;
+ 
+     if (msg) {
+-        unsigned long int MemFree = 0;
++        unsigned long long MemFree = 0;
+ 
+         memory_fillgrade = calculateMemLoad(MemFree);
+ 
+@@ -428,6 +433,5 @@ void fill_stats(unsigned long &myidleload, unsigned long &myniceload, unsigned i
+         msg->loadAvg10 = (load_t)(avg[2] * 1000);
+ 
+         msg->freeMem = (load_t)(MemFree / 1024.0 + 0.5);
+-
+     }
+ }
+-- 
+2.34.1
+

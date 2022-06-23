@@ -1,2 +1,4 @@
 suse-no-ibm.diff
 scheduler-algorithm.diff
+0001-fix-daemon-setting-wrong-memory-limitation.patch
+0002-fix-call_cpp-could-be-executed-more-time-than-max_cp.patch
