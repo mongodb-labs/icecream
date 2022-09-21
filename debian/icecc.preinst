@@ -1,13 +1,9 @@
 #!/bin/sh
-# prerm script for icecc
+# preinst script for icecc
 
 set -e
 
 #DEBHELPER#
-
-if [ -x "/etc/init.d/icecc-scheduler" ]; then
-        invoke-rc.d icecc-scheduler stop || exit $?
-fi
 
 # Ensure old saved config file is removed so we don't accidentallt
 # empty the new configuration during postinst.
