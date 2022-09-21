@@ -32,6 +32,22 @@ if [ -x "/etc/init.d/icecc-scheduler" ]; then
         fi
 fi
 
+CONFIGFILE=/etc/icecc/icecc.conf
+
+if [ -r $CONFIGFILE.dpkg-old ]; then
+       . $CONFIGFILE.dpkg-old
+
+       sed -i "s/^\\(ICECC_NICE_LEVEL\\)=.*/\1=\"$ICECC_NICE_LEVEL\"/" /etc/icecc/icecc.conf
+       sed -i "s/^\\(ICECC_LOG_FILE\\)=.*/\1=\"$ICECC_LOG_FILE\"/" /etc/icecc/icecc.conf
+       sed -i "s/^\\(ICECC_NETNAME\\)=.*/\1=\"$ICECC_NETNAME\"/" /etc/icecc/icecc.conf
+       sed -i "s/^\\(ICECC_ALLOW_REMOTE\\)=.*/\1=\"$ICECC_ALLOW_REMOTE\"/" /etc/icecc/icecc.conf
+       sed -i "s/^\\(ICECC_BASEDIR\\)=.*/\1=\"$ICECC_BASEDIR\"/" /etc/icecc/icecc.conf
+       sed -i "s/^\\(ICECC_SCHEDULER_LOG_FILE\\)=.*/\1=\"$ICECC_SCHEDULER_LOG_FILE\"/" /etc/icecc/icecc.conf
+       sed -i "s/^\\(ICECC_SCHEDULER_HOST\\)=.*/\1=\"$ICECC_SCHEDULER_HOST\"/" /etc/icecc/icecc.conf
+       sed -i "s/^\\(ICECC_CACHE_LIMIT\\)=.*/\1=\"$ICECC_CACHE_LIMIT\"/" /etc/icecc/icecc.conf
+       sed -i "s/^\\(ICECC_SCHEDULER_ALGORITHM\\)=.*/\1=\"$ICECC_SCHEDULER_ALGORITHM\"/" /etc/icecc/icecc.conf
+fi
+
 #DEBHELPER#
 
 exit 0
