@@ -20,7 +20,7 @@ Vcs-Browser: https://salsa.debian.org/qt-kde-team/extras/icecc
 Package: icecc
 Architecture: any
 Pre-Depends: ${misc:Pre-Depends}
-Depends: ${shlibs:Depends}, ${misc:Depends}, adduser, lsb-base, file,
+Depends: ${shlibs:Depends}, ${misc:Depends}, adduser, lsb-base, file, sed,
  g++ | c++-compiler | c-compiler
 Recommends: logrotate
 Suggests: icecc-monitor, clang [amd64 i386]
