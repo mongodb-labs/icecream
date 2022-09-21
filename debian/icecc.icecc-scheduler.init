@@ -27,6 +27,11 @@ if test -n "$ICECC_NETNAME"; then
 	netname="-n $ICECC_NETNAME"
 fi
 
+scheduler_algo=""
+if test -n "$ICECC_SCHEDULER_ALGORITHM"; then
+    scheduler_algo="-a $ICECC_SCHEDULER_ALGORITHM"
+fi
+
 start_icecc_scheduler() {
 	if test -z "$ICECC_SCHEDULER_LOG_FILE"; then
 		ICECC_SCHEDULER_LOG_FILE="/var/log/icecc_scheduler"
@@ -36,7 +41,7 @@ start_icecc_scheduler() {
 	: > $ICECC_SCHEDULER_LOG_FILE
 	chown icecc $ICECC_SCHEDULER_LOG_FILE
 	start-stop-daemon --start --quiet --chuid icecc \
-	--exec $SCHEDULER -- -d $logfile $netname
+	--exec $SCHEDULER -- -d $logfile $netname $scheduler_algo
 }
 
 stop_icecc_scheduler() {
