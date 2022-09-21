@@ -34,6 +34,8 @@ fi
 
 CONFIGFILE=/etc/icecc/icecc.conf
 
+# If we chose to install the new conf, migrate over the past settings and then
+# clean up afterwards to prevent future upgrades from overwriting it.
 if [ -r $CONFIGFILE.dpkg-old ]; then
        . $CONFIGFILE.dpkg-old
 
@@ -46,6 +48,8 @@ if [ -r $CONFIGFILE.dpkg-old ]; then
        sed -i "s,^\\(ICECC_SCHEDULER_HOST\\)=.*,\1=\"$ICECC_SCHEDULER_HOST\"," /etc/icecc/icecc.conf
        sed -i "s,^\\(ICECC_CACHE_LIMIT\\)=.*,\1=\"$ICECC_CACHE_LIMIT\"," /etc/icecc/icecc.conf
        sed -i "s,^\\(ICECC_SCHEDULER_ALGORITHM\\)=.*,\1=\"$ICECC_SCHEDULER_ALGORITHM\"," /etc/icecc/icecc.conf
+
+       rm $CONFIGFILE.dpkg-old
 fi
 
 #DEBHELPER#
