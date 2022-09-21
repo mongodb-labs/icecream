@@ -1,3 +1,9 @@
+icecc (1.4-1~ppa4+bionic1) bionic; urgency=medium
+
+  * Added scheduler algorithm selection to config file
+
+ -- Ryan Egesdahl <ryan.egesdahl@mongodb.com>  Wed, 21 Sep 2022 09:37:43 -0700
+
 icecc (1.4-1~ppa3+bionic1) bionic; urgency=medium
 
   * Fix daemon setting an incorrect memory limit
