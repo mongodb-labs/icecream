@@ -1,4 +1,4 @@
-icecc (1.4-1~ppa4+focal1) focal; urgency=medium
+icecc (1.4-1~ppa4+focal2) focal; urgency=medium
 
   * Added scheduler algorithm selection to config file
 
